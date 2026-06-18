@@ -273,11 +273,15 @@
     ctx.beginPath(); ctx.ellipse(peg.x, peg.yTop, 7, 4, 0, 0, 7); ctx.fill();
   }
   function drawRing(r) {
+    const TAU = Math.PI*2;
     const rO = r.rO, rI = r.rI, mid = (rO+rI)/2, tube = (rO-rI)/2;
-    const annulus = () => { ctx.beginPath(); ctx.arc(0,0,rO,0,7); ctx.arc(0,0,rI,0,7,true); };
+    const annulus = () => { ctx.beginPath(); ctx.arc(0,0,rO,0,TAU); ctx.arc(0,0,rI,0,TAU,true); };
     ctx.save(); ctx.translate(r.x, r.y);
-    // soft contact shadow (ring-shaped, offset)
-    ctx.save(); ctx.translate(3,5); ctx.fillStyle='rgba(0,0,0,.20)'; annulus(); ctx.fill('evenodd'); ctx.restore();
+    // soft contact shadow (ring-shaped, offset) — clipped OUT of the hole so it can't bleed inside
+    ctx.save();
+    ctx.beginPath(); ctx.rect(-rO-8,-rO-8,(rO+8)*2,(rO+8)*2); ctx.arc(0,0,rI,0,TAU,true); ctx.clip('evenodd');
+    ctx.translate(3,5); ctx.fillStyle='rgba(0,0,0,.20)'; annulus(); ctx.fill('evenodd');
+    ctx.restore();
     // rounded TUBE shading: bright along the tube centerline, dark at inner & outer edges
     const tubeGrad = ctx.createRadialGradient(0,0, rI, 0,0, rO);
     tubeGrad.addColorStop(0.00, shade(r.color,-0.55));
