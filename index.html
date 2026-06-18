@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="theme-color" content="#04121d" />
+<title>Aqua Rings</title>
+<style>
+  :root { --ui: #eaf6ff; }
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    height: 100%; overflow: hidden; background: #04121d;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    color: var(--ui); touch-action: none; user-select: none; -webkit-user-select: none;
+  }
+  #wrap { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; }
+  #game { display: block; touch-action: none; border-radius: 14px; box-shadow: 0 0 70px rgba(0,0,0,.7); }
+  #hud {
+    position: fixed; top: env(safe-area-inset-top, 8px); left: 0; right: 0;
+    display: flex; justify-content: space-between; padding: 10px 16px;
+    font-weight: 700; font-size: 15px; pointer-events: none; text-shadow: 0 1px 3px rgba(0,0,0,.7);
+  }
+  #hud .pill { background: rgba(0,0,0,.35); padding: 6px 12px; border-radius: 20px; }
+  #toast {
+    position: fixed; top: 44%; left: 50%; transform: translate(-50%,-50%);
+    font-size: 28px; font-weight: 800; opacity: 0; transition: opacity .25s;
+    text-shadow: 0 2px 8px rgba(0,0,0,.85); pointer-events: none; text-align: center; white-space: pre;
+  }
+  #hint {
+    position: fixed; bottom: calc(env(safe-area-inset-bottom, 10px) + 8px); left: 0; right: 0;
+    text-align: center; font-size: 12px; opacity: .55; pointer-events: none;
+  }
+  #reset {
+    position: fixed; top: env(safe-area-inset-top, 8px); left: 50%; transform: translateX(-50%);
+    background: rgba(0,0,0,.35); border: 0; color: var(--ui); font-weight: 700;
+    padding: 6px 14px; border-radius: 20px; font-size: 13px; pointer-events: auto;
+  }
+</style>
+</head>
+<body>
+  <div id="wrap"><canvas id="game"></canvas></div>
+  <div id="hud">
+    <div class="pill">🏆 <span id="score">0</span> / <span id="total">6</span></div>
+    <div class="pill">⏱ <span id="time">0.0</span>s</div>
+  </div>
+  <button id="reset">↺ Reset</button>
+  <div id="toast"></div>
+  <div id="hint">Hold &amp; slide to aim a water jet — use two fingers for both jets. Land rings on the pegs.</div>
+
+<script>
+(() => {
+  const cv = document.getElementById('game');
+  const ctx = cv.getContext('2d');
+  // Polyfill for older iOS Safari (roundRect added in Safari 16)
+  if (!ctx.roundRect) {
+    CanvasRenderingContext2D.prototype.roundRect = function(x,y,w,h,r){
+      r = Math.min(r, Math.abs(w)/2, Math.abs(h)/2);
+      this.moveTo(x+r,y); this.arcTo(x+w,y,x+w,y+h,r); this.arcTo(x+w,y+h,x,y+h,r);
+      this.arcTo(x,y+h,x,y,r); this.arcTo(x,y,x+w,y,r); this.closePath(); return this;
+    };
+  }
+  const scoreEl = document.getElementById('score');
+  const totalEl = document.getElementById('total');
+  const timeEl  = document.getElementById('time');
+  const toastEl = document.getElementById('toast');
+
+  const W = 430, H = 740;
+  let scale = 1, offX = 0, offY = 0;
+
+  function viewport() {
+    const vv = window.visualViewport;
+    const vw = (vv && vv.width)  || window.innerWidth  || document.documentElement.clientWidth  || screen.width;
+    const vh = (vv && vv.height) || window.innerHeight || document.documentElement.clientHeight || screen.height;
+    return { vw, vh };
+  }
+  function resize() {
+    const { vw, vh } = viewport();
+    if (!vw || !vh) return;                 // dimensions not ready yet (iOS preview webview)
+    scale = Math.min(vw / W, vh / H);
+    if (!isFinite(scale) || scale <= 0) return;
+    cv.style.width = (W*scale)+'px'; cv.style.height = (H*scale)+'px';
+    const dpr = window.devicePixelRatio || 1;
+    cv.width = Math.round(W*scale*dpr); cv.height = Math.round(H*scale*dpr);
+    ctx.setTransform(scale*dpr,0,0,scale*dpr,0,0);
+    const r = cv.getBoundingClientRect(); offX = r.left; offY = r.top;
+  }
+  addEventListener('resize', resize);
+  addEventListener('load', resize);
+  addEventListener('orientationchange', () => setTimeout(resize, 200));
+  if (window.visualViewport) window.visualViewport.addEventListener('resize', resize);
+  // Retry a few times — some iOS webviews report 0-size until after first paint
+  [0, 50, 150, 400, 1000].forEach(d => setTimeout(resize, d));
+
+  // ---- Layout ----
+  const FRAME = 14;                                // glass frame thickness
+  const JET_HALF = 64;                             // horizontal reach of a jet
+  const clampX = x => Math.max(FRAME+JET_HALF*0.4, Math.min(W-FRAME-JET_HALF*0.4, x));
+
+  const PEG_Y = 175, PEG_H = 70;
+  const GROUND = H - 70;
+  const PEG_XS = [W*0.27, W*0.5, W*0.73];          // fixed pegs to aim for
+  const HOME = [W*0.30, W*0.70];                   // resting x of the 2 jets (keyboard/desktop)
+
+  const RING_COLORS = ['#ff5b5b','#ffd23f','#3fd16b','#3fa9ff','#c45bff','#ff9f1c'];
+  let rings = [], pegs = [], bubbles = [], gravel = [], stillBubbles = [], corals = [];
+  let score = 0, startT = 0, won = false;
+
+  function buildDecor() {
+    gravel = [];
+    for (let i=0;i<140;i++) gravel.push({ x: Math.random()*W, y: GROUND + Math.random()*(H-GROUND-2), r: 2+Math.random()*4,
+      c: ['#caa86a','#b89256','#8d6e3c','#d8c089','#9c7b4a'][Math.floor(Math.random()*5)] });
+    // static decorative bubbles / sparkles (no motion)
+    stillBubbles = [];
+    for (let i=0;i<28;i++) stillBubbles.push({ x: Math.random()*W, y: 30+Math.random()*(GROUND-120),
+      r: 2+Math.random()*7, a: 0.10+Math.random()*0.22 });
+    // static coral / sponge silhouettes near the bed
+    corals = [
+      { x: 40,  c: '#6b5fb0' }, { x: 95,  c: '#8a6fc0' },
+      { x: W-50, c: '#5f7fb8' }, { x: W-100, c: '#7a6bb5' }
+    ].map(o => ({ ...o, h: 70+Math.random()*40, w: 18+Math.random()*10 }));
+  }
+
+  function reset() {
+    rings = []; pegs = []; bubbles = []; score = 0; won = false; startT = performance.now();
+    PEG_XS.forEach(x => pegs.push({ x, yTop: PEG_Y, yBot: PEG_Y+PEG_H, ring: null }));
+    const n = 6; totalEl.textContent = n;
+    for (let i=0;i<n;i++) rings.push({
+      x: PEG_XS[i % PEG_XS.length] + (Math.random()*30-15),
+      y: GROUND - 30 - Math.floor(i/PEG_XS.length)*52,
+      vx: 0, vy: 0, rO: 27, rI: 12,
+      color: RING_COLORS[i % RING_COLORS.length],
+      peg: null, spin: Math.random()*6.28
+    });
+    scoreEl.textContent = 0;
+    buildDecor();
+  }
+
+  // ---- Input: 2 movable jets (hold & slide to aim sideways) ----
+  // Each active pointer is its own jet, positioned at the finger's x. Up to 2 at once.
+  const pointers = new Map();          // pointerId -> live x in field coords
+  const keyJets = new Map();           // 'L'/'R' -> x  (desktop arrow keys)
+  const toField = cx => (cx - offX) / scale;
+  const jetXs = () => [...pointers.values(), ...keyJets.values()].slice(0, 2);
+  function press(id, x){ if (!pointers.has(id) && pointers.size >= 2) return; pointers.set(id, clampX(x)); }
+  cv.addEventListener('pointerdown', e => { e.preventDefault(); cv.setPointerCapture?.(e.pointerId); press(e.pointerId, toField(e.clientX)); });
+  cv.addEventListener('pointermove', e => { if (pointers.has(e.pointerId)) pointers.set(e.pointerId, clampX(toField(e.clientX))); });
+  cv.addEventListener('pointerup',   e => pointers.delete(e.pointerId));
+  cv.addEventListener('pointercancel', e => pointers.delete(e.pointerId));
+  // Desktop: A/D or Left/Right hold the two jets at their home positions
+  addEventListener('keydown', e => { if (e.key==='ArrowLeft'||e.key==='a') keyJets.set('L',HOME[0]); if (e.key==='ArrowRight'||e.key==='d') keyJets.set('R',HOME[1]); });
+  addEventListener('keyup',   e => { if (e.key==='ArrowLeft'||e.key==='a') keyJets.delete('L'); if (e.key==='ArrowRight'||e.key==='d') keyJets.delete('R'); });
+  document.getElementById('reset').addEventListener('click', reset);
+  const showToast = txt => { toastEl.textContent = txt; toastEl.style.opacity = 1; clearTimeout(showToast._t); showToast._t = setTimeout(()=>toastEl.style.opacity=0, 1600); };
+
+  // ---- Physics ----
+  const G = 0.10, DRAG = 0.965, WALL = 0.45, JET_F = 0.55;
+  function step() {
+    const xs = jetXs();
+    for (const cx of xs) if (Math.random()<0.8)
+      bubbles.push({ x: cx + (Math.random()*JET_HALF*2 - JET_HALF), y: GROUND, r: 2+Math.random()*4, vy: -(1.6+Math.random()*1.6) });
+    bubbles.forEach(b => { b.y += b.vy; b.x += Math.sin(b.y*0.05)*0.3; });
+    bubbles = bubbles.filter(b => b.y > 50);
+
+    for (const ring of rings) {
+      if (ring.peg) continue;
+      ring.vy += G;
+      for (const cx of xs) {
+        if (Math.abs(ring.x - cx) < JET_HALF) { ring.vy -= JET_F; ring.vx += (cx-ring.x)*0.012 + (Math.random()-.5)*0.3; }
+      }
+      ring.vx *= DRAG; ring.vy *= DRAG;
+      ring.x += ring.vx; ring.y += ring.vy; ring.spin += ring.vx*0.01;
+      const r = ring.rO;
+      if (ring.x < FRAME+r) { ring.x = FRAME+r; ring.vx = Math.abs(ring.vx)*WALL; }
+      if (ring.x > W-FRAME-r){ ring.x = W-FRAME-r; ring.vx = -Math.abs(ring.vx)*WALL; }
+      if (ring.y > GROUND-6){ ring.y = GROUND-6; ring.vy = -Math.abs(ring.vy)*WALL; }
+      if (ring.y < FRAME+r) { ring.y = FRAME+r; ring.vy = Math.abs(ring.vy)*WALL; }
+      for (const peg of pegs) {
+        if (peg.ring) continue;
+        if (Math.abs(ring.x-peg.x) < ring.rI && ring.y < peg.yTop+14 && ring.y > peg.yTop-30 && ring.vy > -0.5 && Math.abs(ring.vx) < 2.4) {
+          peg.ring = ring; ring.peg = peg; ring.x = peg.x; ring.y = peg.yTop+8; ring.vx = ring.vy = 0;
+          score++; scoreEl.textContent = score;
+          if (score >= rings.length && !won) { won = true; showToast('🎉 You win!\n'+((performance.now()-startT)/1000).toFixed(1)+'s'); }
+          else showToast('Nice! +1');
+          break;
+        }
+      }
+    }
+    if (!won) timeEl.textContent = ((performance.now()-startT)/1000).toFixed(1);
+  }
+
+  // ---- Rendering (3D-ish) ----
+  function water() {
+    // multi-level blue gradient (light surface -> deep)
+    const g = ctx.createLinearGradient(0,0,0,H);
+    g.addColorStop(0.00,'#7fc6e8');
+    g.addColorStop(0.18,'#4ea3d4');
+    g.addColorStop(0.40,'#2f82bd');
+    g.addColorStop(0.62,'#1d63a0');
+    g.addColorStop(0.82,'#114a82');
+    g.addColorStop(1.00,'#0a3157');
+    ctx.fillStyle = g; ctx.fillRect(0,0,W,H);
+    // static light rays from the surface
+    ctx.save(); ctx.globalCompositeOperation='lighter'; ctx.globalAlpha=0.08; ctx.fillStyle='#cfeeff';
+    const rays=[40,120,210,300,380];
+    for (const x of rays){ const w=34; ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x+w,0); ctx.lineTo(x+w*0.4,H*0.6); ctx.lineTo(x-w*0.2,H*0.6); ctx.fill(); }
+    ctx.restore();
+  }
+  function decorBubbles() {
+    for (const b of stillBubbles){
+      ctx.strokeStyle = `rgba(220,245,255,${b.a})`; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(b.x,b.y,b.r,0,7); ctx.stroke();
+      ctx.fillStyle = `rgba(255,255,255,${b.a*0.5})`;
+      ctx.beginPath(); ctx.arc(b.x-b.r*0.3,b.y-b.r*0.3,b.r*0.3,0,7); ctx.fill();
+    }
+  }
+  function drawCoral(o) {
+    ctx.fillStyle = o.c;
+    ctx.beginPath(); ctx.moveTo(o.x, GROUND);
+    ctx.quadraticCurveTo(o.x-o.w, GROUND-o.h*0.6, o.x-o.w*0.3, GROUND-o.h);
+    ctx.quadraticCurveTo(o.x, GROUND-o.h*0.7, o.x+o.w*0.3, GROUND-o.h);
+    ctx.quadraticCurveTo(o.x+o.w, GROUND-o.h*0.6, o.x+o.w*0.4, GROUND);
+    ctx.closePath(); ctx.fill();
+    // sponge holes
+    ctx.fillStyle = 'rgba(0,0,0,.18)';
+    for (let i=0;i<3;i++){ ctx.beginPath(); ctx.arc(o.x+(i-1)*o.w*0.35, GROUND-o.h*0.55-i*8, 3, 0, 7); ctx.fill(); }
+  }
+  function gravelBed() {
+    const g = ctx.createLinearGradient(0,GROUND-20,0,H);
+    g.addColorStop(0,'#b8975a'); g.addColorStop(1,'#7c5e30'); ctx.fillStyle=g;
+    ctx.beginPath(); ctx.moveTo(0,H); ctx.lineTo(0,GROUND);
+    for (let x=0;x<=W;x+=40) ctx.quadraticCurveTo(x+20,GROUND-16,x+40,GROUND); ctx.lineTo(W,H); ctx.fill();
+    for (const p of gravel){ ctx.fillStyle=p.c; ctx.beginPath(); ctx.arc(p.x,p.y,p.r,0,7); ctx.fill(); }
+  }
+  function jetGlow() {
+    for (const cx of jetXs()) {
+      const g = ctx.createLinearGradient(0,GROUND,0,0);
+      g.addColorStop(0,'rgba(190,240,255,.35)'); g.addColorStop(1,'rgba(190,240,255,0)');
+      ctx.fillStyle=g; ctx.fillRect(cx-JET_HALF, 0, JET_HALF*2, GROUND);
+      // nozzle marker on the bed so you see where the jet is aimed
+      ctx.fillStyle='rgba(190,240,255,.55)';
+      ctx.beginPath(); ctx.ellipse(cx, GROUND, JET_HALF*0.55, 6, 0, 0, 7); ctx.fill();
+    }
+  }
+  function drawPeg(peg) {
+    // cylinder body with horizontal shading
+    const g = ctx.createLinearGradient(peg.x-6,0,peg.x+6,0);
+    g.addColorStop(0,'#b9933f'); g.addColorStop(0.4,'#f6e3a6'); g.addColorStop(0.6,'#f6e3a6'); g.addColorStop(1,'#9c7a2e');
+    ctx.fillStyle = g; ctx.beginPath(); ctx.roundRect(peg.x-6, peg.yTop, 12, peg.yBot-peg.yTop, 5); ctx.fill();
+    // base ring on gravel
+    ctx.fillStyle='rgba(0,0,0,.18)'; ctx.beginPath(); ctx.ellipse(peg.x, peg.yBot, 16, 5, 0, 0, 7); ctx.fill();
+    // rounded top cap
+    ctx.fillStyle = peg.ring ? '#bfffd0' : '#fff7df';
+    ctx.beginPath(); ctx.ellipse(peg.x, peg.yTop, 7, 4, 0, 0, 7); ctx.fill();
+  }
+  function drawRing(r) {
+    ctx.save(); ctx.translate(r.x, r.y);
+    // contact/drop shadow for depth
+    ctx.fillStyle = 'rgba(0,0,0,.22)'; ctx.beginPath(); ctx.ellipse(0, r.rO*0.55, r.rO*0.95, r.rO*0.32, 0, 0, 7); ctx.fill();
+    ctx.scale(1, 0.78); ctx.rotate(r.spin);                     // squash = viewed at an angle
+    // shaded torus via even-odd annulus + radial light
+    const grad = ctx.createRadialGradient(-r.rO*0.35,-r.rO*0.35, r.rI*0.3, 0,0, r.rO);
+    grad.addColorStop(0, '#ffffff'); grad.addColorStop(0.25, r.color); grad.addColorStop(1, shade(r.color,-0.45));
+    ctx.beginPath(); ctx.arc(0,0,r.rO,0,7); ctx.arc(0,0,r.rI,0,7,true);
+    ctx.fillStyle = grad; ctx.fill('evenodd');
+    // specular highlight band
+    ctx.strokeStyle='rgba(255,255,255,.65)'; ctx.lineWidth=3; ctx.beginPath();
+    ctx.arc(0,0,(r.rO+r.rI)/2, -2.5,-1.3); ctx.stroke();
+    ctx.restore();
+  }
+  function shade(hex, f){ const n=parseInt(hex.slice(1),16); let R=(n>>16)&255,Gc=(n>>8)&255,B=n&255;
+    const a=x=> Math.max(0,Math.min(255, Math.round(x + (f<0? x*f : (255-x)*f))));
+    return `rgb(${a(R)},${a(Gc)},${a(B)})`; }
+  function glassFrame() {
+    // front-glass diagonal sheen
+    ctx.save(); ctx.globalAlpha=0.07; ctx.fillStyle='#fff';
+    ctx.beginPath(); ctx.moveTo(W*0.1,0); ctx.lineTo(W*0.35,0); ctx.lineTo(W*0.05,H); ctx.lineTo(-W*0.2,H); ctx.fill(); ctx.restore();
+    // tank frame
+    ctx.lineWidth = FRAME; ctx.strokeStyle = '#0c2230';
+    ctx.strokeRect(FRAME/2, FRAME/2, W-FRAME, H-FRAME);
+    ctx.lineWidth = 2; ctx.strokeStyle = 'rgba(255,255,255,.18)';
+    ctx.strokeRect(FRAME, FRAME, W-2*FRAME, H-2*FRAME);
+  }
+
+  function frame() {
+    if (cv.width <= 300) resize();           // self-heal if canvas never got real dimensions
+    step();
+    water(); decorBubbles(); jetGlow();
+    gravelBed();
+    for (const o of corals) drawCoral(o);
+    for (const peg of pegs) drawPeg(peg);
+    ctx.fillStyle='rgba(220,245,255,.5)'; for (const b of bubbles){ ctx.beginPath(); ctx.arc(b.x,b.y,b.r,0,7); ctx.fill(); }
+    for (const r of rings) drawRing(r);
+    glassFrame();
+    requestAnimationFrame(frame);
+  }
+
+  resize(); reset(); requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
