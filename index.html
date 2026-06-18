@@ -104,6 +104,8 @@
   const clampX = x => Math.max(FRAME+JET_HALF*0.4, Math.min(W-FRAME-JET_HALF*0.4, x));
 
   const PEG_Y = 175, PEG_H = 70;
+  const PEG_CAP = 4;           // max rings a post can hold
+  const RING_STACK = 13;       // vertical spacing between stacked rings
   const GROUND = H - 70;
   const PEG_XS = [W*0.27, W*0.5, W*0.73];          // fixed pegs to aim for
   const HOME = [W*0.30, W*0.70];                   // resting x of the 2 jets (keyboard/desktop)
@@ -129,7 +131,7 @@
 
   function reset() {
     rings = []; pegs = []; bubbles = []; score = 0; won = false; startT = performance.now();
-    PEG_XS.forEach(x => pegs.push({ x, yTop: PEG_Y, yBot: PEG_Y+PEG_H, ring: null }));
+    PEG_XS.forEach(x => pegs.push({ x, yTop: PEG_Y, yBot: PEG_Y+PEG_H, rings: [] }));
     const n = 6; totalEl.textContent = n;
     for (let i=0;i<n;i++) { const row = Math.floor(i/PEG_XS.length);
       rings.push({
@@ -184,9 +186,10 @@
       if (ring.y > GROUND-6){ ring.y = GROUND-6; ring.vy = -Math.abs(ring.vy)*WALL; }
       if (ring.y < FRAME+r) { ring.y = FRAME+r; ring.vy = Math.abs(ring.vy)*WALL; }
       for (const peg of pegs) {
-        if (peg.ring) continue;
+        if (peg.rings.length >= PEG_CAP) continue;            // post is full
         if (Math.abs(ring.x-peg.x) < ring.rI && ring.y < peg.yTop+14 && ring.y > peg.yTop-30 && ring.vy > -0.5 && Math.abs(ring.vx) < 2.4) {
-          peg.ring = ring; ring.peg = peg; ring.x = peg.x; ring.y = peg.yTop+8; ring.vx = ring.vy = 0;
+          ring.peg = peg; ring.x = peg.x; ring.y = peg.yBot - 8 - peg.rings.length*RING_STACK; ring.vx = ring.vy = 0;
+          peg.rings.push(ring);
           score++; scoreEl.textContent = score;
           if (score >= rings.length && !won) { won = true; showToast('🎉 You win!\n'+((performance.now()-startT)/1000).toFixed(1)+'s'); }
           else showToast('Nice! +1');
@@ -196,7 +199,7 @@
     }
     // keep rings from overlapping/sticking — push any overlapping pair apart
     for (let i=0;i<rings.length;i++) for (let j=i+1;j<rings.length;j++) {
-      const a = rings[i], b = rings[j]; if (a.peg && b.peg) continue;
+      const a = rings[i], b = rings[j]; if (a.peg || b.peg) continue;   // pegged rings never shove others
       let dx = b.x-a.x, dy = b.y-a.y, d = Math.hypot(dx,dy) || 0.01, min = a.rO + b.rO;
       if (d < min) {
         const push = (min-d)/2, ux = dx/d, uy = dy/d;
@@ -269,7 +272,7 @@
     // base ring on gravel
     ctx.fillStyle='rgba(0,0,0,.18)'; ctx.beginPath(); ctx.ellipse(peg.x, peg.yBot, 16, 5, 0, 0, 7); ctx.fill();
     // rounded top cap
-    ctx.fillStyle = peg.ring ? '#bfffd0' : '#fff7df';
+    ctx.fillStyle = peg.rings.length ? '#bfffd0' : '#fff7df';
     ctx.beginPath(); ctx.ellipse(peg.x, peg.yTop, 7, 4, 0, 0, 7); ctx.fill();
   }
   function drawRing(r) {
@@ -322,7 +325,7 @@
     if (!bgReady) { decorBubbles(); gravelBed(); for (const o of corals) drawCoral(o); }
     for (const peg of pegs) drawPeg(peg);
     ctx.fillStyle='rgba(220,245,255,.5)'; for (const b of bubbles){ ctx.beginPath(); ctx.arc(b.x,b.y,b.r,0,7); ctx.fill(); }
-    for (const r of rings) drawRing(r);
+    for (const r of [...rings].sort((a,b)=>b.y-a.y)) drawRing(r);  // bottom-up so stacks overlap right
     glassFrame();
     requestAnimationFrame(frame);
   }
