@@ -62,6 +62,10 @@
       this.arcTo(x,y+h,x,y,r); this.arcTo(x,y,x+w,y,r); this.closePath(); return this;
     };
   }
+  // Optional background image (drop a bg.png next to this file). Falls back to drawn scene.
+  const bgImg = new Image(); let bgReady = false;
+  bgImg.onload = () => { bgReady = true; };
+  bgImg.src = 'bg.png';
   const scoreEl = document.getElementById('score');
   const totalEl = document.getElementById('total');
   const timeEl  = document.getElementById('time');
@@ -127,13 +131,15 @@
     rings = []; pegs = []; bubbles = []; score = 0; won = false; startT = performance.now();
     PEG_XS.forEach(x => pegs.push({ x, yTop: PEG_Y, yBot: PEG_Y+PEG_H, ring: null }));
     const n = 6; totalEl.textContent = n;
-    for (let i=0;i<n;i++) rings.push({
-      x: PEG_XS[i % PEG_XS.length] + (Math.random()*30-15),
-      y: GROUND - 30 - Math.floor(i/PEG_XS.length)*52,
-      vx: 0, vy: 0, rO: 27, rI: 12,
-      color: RING_COLORS[i % RING_COLORS.length],
-      peg: null, spin: Math.random()*6.28
-    });
+    for (let i=0;i<n;i++) { const row = Math.floor(i/PEG_XS.length);
+      rings.push({
+        x: PEG_XS[i % PEG_XS.length] + (row%2?18:-18),   // stagger rows so they don't stack
+        y: GROUND - 40 - row*68,
+        vx: 0, vy: 0, rO: 27, rI: 12,
+        color: RING_COLORS[i % RING_COLORS.length],
+        peg: null, spin: Math.random()*6.28
+      });
+    }
     scoreEl.textContent = 0;
     buildDecor();
   }
@@ -188,12 +194,22 @@
         }
       }
     }
+    // keep rings from overlapping/sticking — push any overlapping pair apart
+    for (let i=0;i<rings.length;i++) for (let j=i+1;j<rings.length;j++) {
+      const a = rings[i], b = rings[j]; if (a.peg && b.peg) continue;
+      let dx = b.x-a.x, dy = b.y-a.y, d = Math.hypot(dx,dy) || 0.01, min = a.rO + b.rO;
+      if (d < min) {
+        const push = (min-d)/2, ux = dx/d, uy = dy/d;
+        if (!a.peg) { a.x -= ux*push; a.y -= uy*push; }
+        if (!b.peg) { b.x += ux*push; b.y += uy*push; }
+      }
+    }
     if (!won) timeEl.textContent = ((performance.now()-startT)/1000).toFixed(1);
   }
 
   // ---- Rendering (3D-ish) ----
   function water() {
-    // multi-level blue gradient (light surface -> deep)
+    // deep-blue water base (also fills above the image)
     const g = ctx.createLinearGradient(0,0,0,H);
     g.addColorStop(0.00,'#7fc6e8');
     g.addColorStop(0.18,'#4ea3d4');
@@ -202,7 +218,18 @@
     g.addColorStop(0.82,'#114a82');
     g.addColorStop(1.00,'#0a3157');
     ctx.fillStyle = g; ctx.fillRect(0,0,W,H);
-    // static light rays from the surface
+
+    if (bgReady) {                       // image fit to full width, anchored to the bottom
+      const iw = bgImg.naturalWidth, ih = bgImg.naturalHeight;
+      const s = W/iw, dh = ih*s, top = H - dh;
+      ctx.drawImage(bgImg, 0, top, W, dh);
+      // soft fade so the blue water blends into the image's top edge (hides the seam)
+      const f = ctx.createLinearGradient(0, top, 0, top+70);
+      f.addColorStop(0,'rgba(23,88,143,0.95)'); f.addColorStop(1,'rgba(23,88,143,0)');
+      ctx.fillStyle=f; ctx.fillRect(0, top, W, 70);
+      return;
+    }
+    // static light rays from the surface (drawn-scene fallback)
     ctx.save(); ctx.globalCompositeOperation='lighter'; ctx.globalAlpha=0.08; ctx.fillStyle='#cfeeff';
     const rays=[40,120,210,300,380];
     for (const x of rays){ const w=34; ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x+w,0); ctx.lineTo(x+w*0.4,H*0.6); ctx.lineTo(x-w*0.2,H*0.6); ctx.fill(); }
@@ -234,16 +261,6 @@
     for (let x=0;x<=W;x+=40) ctx.quadraticCurveTo(x+20,GROUND-16,x+40,GROUND); ctx.lineTo(W,H); ctx.fill();
     for (const p of gravel){ ctx.fillStyle=p.c; ctx.beginPath(); ctx.arc(p.x,p.y,p.r,0,7); ctx.fill(); }
   }
-  function jetGlow() {
-    for (const cx of jetXs()) {
-      const g = ctx.createLinearGradient(0,GROUND,0,0);
-      g.addColorStop(0,'rgba(190,240,255,.35)'); g.addColorStop(1,'rgba(190,240,255,0)');
-      ctx.fillStyle=g; ctx.fillRect(cx-JET_HALF, 0, JET_HALF*2, GROUND);
-      // nozzle marker on the bed so you see where the jet is aimed
-      ctx.fillStyle='rgba(190,240,255,.55)';
-      ctx.beginPath(); ctx.ellipse(cx, GROUND, JET_HALF*0.55, 6, 0, 0, 7); ctx.fill();
-    }
-  }
   function drawPeg(peg) {
     // cylinder body with horizontal shading
     const g = ctx.createLinearGradient(peg.x-6,0,peg.x+6,0);
@@ -256,18 +273,28 @@
     ctx.beginPath(); ctx.ellipse(peg.x, peg.yTop, 7, 4, 0, 0, 7); ctx.fill();
   }
   function drawRing(r) {
+    const rO = r.rO, rI = r.rI, mid = (rO+rI)/2, tube = (rO-rI)/2;
+    const annulus = () => { ctx.beginPath(); ctx.arc(0,0,rO,0,7); ctx.arc(0,0,rI,0,7,true); };
     ctx.save(); ctx.translate(r.x, r.y);
-    // contact/drop shadow for depth
-    ctx.fillStyle = 'rgba(0,0,0,.22)'; ctx.beginPath(); ctx.ellipse(0, r.rO*0.55, r.rO*0.95, r.rO*0.32, 0, 0, 7); ctx.fill();
-    ctx.scale(1, 0.78); ctx.rotate(r.spin);                     // squash = viewed at an angle
-    // shaded torus via even-odd annulus + radial light
-    const grad = ctx.createRadialGradient(-r.rO*0.35,-r.rO*0.35, r.rI*0.3, 0,0, r.rO);
-    grad.addColorStop(0, '#ffffff'); grad.addColorStop(0.25, r.color); grad.addColorStop(1, shade(r.color,-0.45));
-    ctx.beginPath(); ctx.arc(0,0,r.rO,0,7); ctx.arc(0,0,r.rI,0,7,true);
-    ctx.fillStyle = grad; ctx.fill('evenodd');
-    // specular highlight band
-    ctx.strokeStyle='rgba(255,255,255,.65)'; ctx.lineWidth=3; ctx.beginPath();
-    ctx.arc(0,0,(r.rO+r.rI)/2, -2.5,-1.3); ctx.stroke();
+    // soft contact shadow (ring-shaped, offset)
+    ctx.save(); ctx.translate(3,5); ctx.fillStyle='rgba(0,0,0,.20)'; annulus(); ctx.fill('evenodd'); ctx.restore();
+    // rounded TUBE shading: bright along the tube centerline, dark at inner & outer edges
+    const tubeGrad = ctx.createRadialGradient(0,0, rI, 0,0, rO);
+    tubeGrad.addColorStop(0.00, shade(r.color,-0.55));
+    tubeGrad.addColorStop(0.50, shade(r.color, 0.35));
+    tubeGrad.addColorStop(1.00, shade(r.color,-0.55));
+    annulus(); ctx.fillStyle = tubeGrad; ctx.fill('evenodd');
+    // directional 3D light (upper-left lit, lower-right shaded), clipped to the ring
+    ctx.save(); annulus(); ctx.clip('evenodd');
+    const lg = ctx.createLinearGradient(-rO*0.7,-rO*0.7, rO*0.7,rO*0.7);
+    lg.addColorStop(0.00,'rgba(255,255,255,.45)');
+    lg.addColorStop(0.45,'rgba(255,255,255,0)');
+    lg.addColorStop(0.55,'rgba(0,0,0,0)');
+    lg.addColorStop(1.00,'rgba(0,0,0,.32)');
+    ctx.fillStyle = lg; ctx.fillRect(-rO,-rO,2*rO,2*rO); ctx.restore();
+    // glossy specular highlight on the upper-left of the tube
+    ctx.strokeStyle = 'rgba(255,255,255,.75)'; ctx.lineWidth = tube*0.55; ctx.lineCap='round';
+    ctx.beginPath(); ctx.arc(0,0, mid, Math.PI*1.08, Math.PI*1.5); ctx.stroke();
     ctx.restore();
   }
   function shade(hex, f){ const n=parseInt(hex.slice(1),16); let R=(n>>16)&255,Gc=(n>>8)&255,B=n&255;
@@ -287,9 +314,8 @@
   function frame() {
     if (cv.width <= 300) resize();           // self-heal if canvas never got real dimensions
     step();
-    water(); decorBubbles(); jetGlow();
-    gravelBed();
-    for (const o of corals) drawCoral(o);
+    water();
+    if (!bgReady) { decorBubbles(); gravelBed(); for (const o of corals) drawCoral(o); }
     for (const peg of pegs) drawPeg(peg);
     ctx.fillStyle='rgba(220,245,255,.5)'; for (const b of bubbles){ ctx.beginPath(); ctx.arc(b.x,b.y,b.r,0,7); ctx.fill(); }
     for (const r of rings) drawRing(r);
