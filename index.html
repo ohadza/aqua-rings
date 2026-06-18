@@ -103,10 +103,10 @@
   const JET_HALF = 64;                             // horizontal reach of a jet
   const clampX = x => Math.max(FRAME+JET_HALF*0.4, Math.min(W-FRAME-JET_HALF*0.4, x));
 
-  const PEG_Y = 150, PEG_H = 120;   // taller posts so they pass through the rings
-  const PEG_CAP = 4;           // max rings a post can hold
+  const PEG_Y = 150, PEG_H = 90;    // shorter posts
+  const PEG_CAP = 2;           // max rings a post can hold
   const RING_STACK = 13;       // vertical spacing between stacked rings
-  const RING_BASE = 44;        // lowest ring's distance above the post base (post extends below it)
+  const RING_BASE = 40;        // lowest ring's distance above the post base (post extends below it)
   const GROUND = H - 70;
   const PEG_XS = [W*0.27, W*0.5, W*0.73];          // fixed pegs to aim for
   const HOME = [W*0.30, W*0.70];                   // resting x of the 2 jets (keyboard/desktop)
