@@ -103,9 +103,10 @@
   const JET_HALF = 64;                             // horizontal reach of a jet
   const clampX = x => Math.max(FRAME+JET_HALF*0.4, Math.min(W-FRAME-JET_HALF*0.4, x));
 
-  const PEG_Y = 175, PEG_H = 70;
+  const PEG_Y = 150, PEG_H = 120;   // taller posts so they pass through the rings
   const PEG_CAP = 4;           // max rings a post can hold
   const RING_STACK = 13;       // vertical spacing between stacked rings
+  const RING_BASE = 44;        // lowest ring's distance above the post base (post extends below it)
   const GROUND = H - 70;
   const PEG_XS = [W*0.27, W*0.5, W*0.73];          // fixed pegs to aim for
   const HOME = [W*0.30, W*0.70];                   // resting x of the 2 jets (keyboard/desktop)
@@ -188,7 +189,7 @@
       for (const peg of pegs) {
         if (peg.rings.length >= PEG_CAP) continue;            // post is full
         if (Math.abs(ring.x-peg.x) < ring.rI && ring.y < peg.yTop+14 && ring.y > peg.yTop-30 && ring.vy > -0.5 && Math.abs(ring.vx) < 2.4) {
-          ring.peg = peg; ring.x = peg.x; ring.y = peg.yBot - 8 - peg.rings.length*RING_STACK; ring.vx = ring.vy = 0;
+          ring.peg = peg; ring.x = peg.x; ring.y = peg.yBot - RING_BASE - peg.rings.length*RING_STACK; ring.vx = ring.vy = 0;
           peg.rings.push(ring);
           score++; scoreEl.textContent = score;
           if (score >= rings.length && !won) { won = true; showToast('🎉 You win!\n'+((performance.now()-startT)/1000).toFixed(1)+'s'); }
@@ -264,16 +265,25 @@
     for (let x=0;x<=W;x+=40) ctx.quadraticCurveTo(x+20,GROUND-16,x+40,GROUND); ctx.lineTo(W,H); ctx.fill();
     for (const p of gravel){ ctx.fillStyle=p.c; ctx.beginPath(); ctx.arc(p.x,p.y,p.r,0,7); ctx.fill(); }
   }
-  function drawPeg(peg) {
-    // cylinder body with horizontal shading
-    const g = ctx.createLinearGradient(peg.x-6,0,peg.x+6,0);
+  function postBody(x, y0, y1) {            // a vertical shaded cylinder segment
+    const g = ctx.createLinearGradient(x-6,0,x+6,0);
     g.addColorStop(0,'#b9933f'); g.addColorStop(0.4,'#f6e3a6'); g.addColorStop(0.6,'#f6e3a6'); g.addColorStop(1,'#9c7a2e');
-    ctx.fillStyle = g; ctx.beginPath(); ctx.roundRect(peg.x-6, peg.yTop, 12, peg.yBot-peg.yTop, 5); ctx.fill();
-    // base ring on gravel
-    ctx.fillStyle='rgba(0,0,0,.18)'; ctx.beginPath(); ctx.ellipse(peg.x, peg.yBot, 16, 5, 0, 0, 7); ctx.fill();
-    // rounded top cap
+    ctx.fillStyle = g; ctx.beginPath(); ctx.roundRect(x-6, y0, 12, y1-y0, 5); ctx.fill();
+  }
+  function pegCap(peg) {
     ctx.fillStyle = peg.rings.length ? '#bfffd0' : '#fff7df';
-    ctx.beginPath(); ctx.ellipse(peg.x, peg.yTop, 7, 4, 0, 0, 7); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(peg.x, peg.yTop, 7, 4, 0, 0, Math.PI*2); ctx.fill();
+  }
+  function drawPeg(peg) {                   // BACK pass: base shadow + full post + cap
+    ctx.fillStyle='rgba(0,0,0,.18)'; ctx.beginPath(); ctx.ellipse(peg.x, peg.yBot, 16, 5, 0, 0, Math.PI*2); ctx.fill();
+    postBody(peg.x, peg.yTop, peg.yBot);
+    pegCap(peg);
+  }
+  function drawPegFront(peg) {              // FRONT pass: redraw post through the rings' holes
+    if (!peg.rings.length) return;
+    const bottomY = peg.yBot - RING_BASE;   // centre of the lowest ring
+    postBody(peg.x, peg.yTop, bottomY + 2);
+    pegCap(peg);
   }
   function drawRing(r) {
     const TAU = Math.PI*2;
@@ -326,6 +336,7 @@
     for (const peg of pegs) drawPeg(peg);
     ctx.fillStyle='rgba(220,245,255,.5)'; for (const b of bubbles){ ctx.beginPath(); ctx.arc(b.x,b.y,b.r,0,7); ctx.fill(); }
     for (const r of [...rings].sort((a,b)=>b.y-a.y)) drawRing(r);  // bottom-up so stacks overlap right
+    for (const peg of pegs) drawPegFront(peg);                     // post shows through the rings' holes
     glassFrame();
     requestAnimationFrame(frame);
   }
